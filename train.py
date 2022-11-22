@@ -30,6 +30,9 @@ parser.add_argument(
 parser.add_argument(
     "--affine", action="store_true", help="use affine coupling instead of additive"
 )
+parser.add_argument(
+    "--energy_distance", action="store_true", help="use energy distance"
+)
 parser.add_argument("--n_bits", default=5, type=int, help="number of bits")
 parser.add_argument("--lr", default=1e-4, type=float, help="learning rate")
 parser.add_argument("--img_size", default=64, type=int, help="image size")
@@ -92,6 +95,41 @@ def calc_loss(log_p, logdet, image_size, n_bins):
         (logdet / (log(2) * n_pixel)).mean(),
     )
 
+'''
+f_loss: function with as input the (x,y,reuse=False), and as output a list/tuple whose first element is the loss.
+'''
+def makeScaleMatrix(num_gen, num_orig):
+        # first 'N' entries have '1/N', next 'M' entries have '-1/M'
+        s1 =  torch.ones(num_gen, 1)/num_gen
+        s2 = -torch.ones(num_orig, 1)/num_orig
+        # 50 is batch size but hardcoded
+        return torch.cat([s1, s2], dim=0)
+
+def _mmd_loss1(x, gen_x, sigma = [2, 5, 10, 20, 40, 80]):
+        # concatenation of the generated images and images from the dataset
+        # first 'N' rows are the generated ones, next 'M' are from the data
+        X = torch.cat([gen_x, x], dim=0)
+        # dot product between all combinations of rows in 'X'
+        XX = torch.matmul(X, torch.transpose(X))
+        # dot product of rows with themselves
+        X2 = torch.sum(X * X, dim = 1, keepdim=True)
+        # exponent entries of the RBF kernel (without the sigma) for each
+        # combination of the rows in 'X'
+        # -0.5 * (x^Tx - 2*x^Ty + y^Ty)
+        exponent = XX - 0.5 * X2 - 0.5 * torch.transpose(X2)
+        # scaling constants for each of the rows in 'X'
+        s = makeScaleMatrix(x.shape[0], x.shape[0])
+        # scaling factors of each of the kernel values, corresponding to the
+        # exponent values
+        S = torch.matmul(s, torch.transpose(s))
+        loss = 0
+        # for each bandwidth parameter, compute the MMD value and add them all
+        for i in range(len(sigma)):
+            # kernel values for each combination of the rows in 'X'
+            kernel_val = torch.exp(1.0 / sigma[i] * exponent)
+            loss += torch.sum(S * kernel_val)
+        print(loss)
+        return torch.sqrt(loss)
 
 def train(args, model, optimizer):
     dataset = iter(sample_data(args.path, args.batch, args.img_size))
@@ -114,31 +152,42 @@ def train(args, model, optimizer):
                 image = torch.floor(image / 2 ** (8 - args.n_bits))
 
             image = image / n_bins - 0.5
+            if not args.energy_distance:
+                if i == 0:
+                    with torch.no_grad():
+                        log_p, logdet, _ = model.module(
+                            image + torch.rand_like(image) / n_bins
+                        )
 
-            if i == 0:
-                with torch.no_grad():
-                    log_p, logdet, _ = model.module(
-                        image + torch.rand_like(image) / n_bins
-                    )
+                        continue
 
-                    continue
+                else:
+                    log_p, logdet, _ = model(image + torch.rand_like(image) / n_bins)
 
+                logdet = logdet.mean()
+
+                loss, log_p, log_det = calc_loss(log_p, logdet, args.img_size, n_bins)
             else:
-                log_p, logdet, _ = model(image + torch.rand_like(image) / n_bins)
-
-            logdet = logdet.mean()
-
-            loss, log_p, log_det = calc_loss(log_p, logdet, args.img_size, n_bins)
+                z_sample_2 = []
+                for z in z_shapes:
+                    z_new = torch.randn(args.batch, *z) * args.temp
+                    z_sample_2.append(z_new.to(device))
+                sample = model_single.reverse(z_sample_2)
+                loss = _mmd_loss1(image, sample)
             model.zero_grad()
             loss.backward()
             # warmup_lr = args.lr * min(1, i * batch_size / (50000 * 10))
             warmup_lr = args.lr
             optimizer.param_groups[0]["lr"] = warmup_lr
             optimizer.step()
-
-            pbar.set_description(
-                f"Loss: {loss.item():.5f}; logP: {log_p.item():.5f}; logdet: {log_det.item():.5f}; lr: {warmup_lr:.7f}"
-            )
+            if not args.energy_distance:
+                pbar.set_description(
+                    f"Loss: {loss.item():.5f}; logP: {log_p.item():.5f}; logdet: {log_det.item():.5f}; lr: {warmup_lr:.7f}"
+                )
+            else:
+                pbar.set_description(
+                    f"Loss: {loss.item():.5f}; lr: {warmup_lr:.7f}"
+                )
 
             if i % 100 == 0:
                 with torch.no_grad():
