@@ -51,7 +51,8 @@ def sample_data(path, batch_size, image_size):
         ]
     )
 
-    dataset = datasets.ImageFolder(path, transform=transform)
+    #dataset = datasets.ImageFolder(path, transform=transform)
+    dataset = datasets.MNIST(root=path, train=True, transform=transform, download=True)
     loader = DataLoader(dataset, shuffle=True, batch_size=batch_size, num_workers=4)
     loader = iter(loader)
 
