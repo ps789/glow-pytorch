@@ -38,15 +38,16 @@ parser.add_argument("--lr", default=1e-4, type=float, help="learning rate")
 parser.add_argument("--img_size", default=64, type=int, help="image size")
 parser.add_argument("--temp", default=0.7, type=float, help="temperature of sampling")
 parser.add_argument("--n_sample", default=20, type=int, help="number of samples")
-parser.add_argument("path", metavar="PATH", type=str, help="Path to image directory")
+parser.add_argument("--path", metavar="PATH", type=str, help="Path to image directory")
 
 
 def sample_data(path, batch_size, image_size):
     transform = transforms.Compose(
         [
+            transforms.Grayscale(3)
             transforms.Resize(image_size),
             transforms.CenterCrop(image_size),
-            transforms.RandomHorizontalFlip(),
+            #transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
         ]
     )
