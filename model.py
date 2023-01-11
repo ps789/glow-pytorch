@@ -51,13 +51,13 @@ class ActNorm(nn.Module):
         logdet = height * width * torch.sum(log_abs)
 
         if self.logdet:
-            return self.scale * (input + self.loc), logdet
+            return input/self.scale - self.loc, logdet
 
         else:
-            return self.scale * (input + self.loc)
+            return input / self.scale - self.loc
 
     def reverse(self, output):
-        return output / self.scale - self.loc
+        return (output + self.loc) * self.scale
 
 
 class InvConv2d(nn.Module):
@@ -116,7 +116,7 @@ class InvConv2dLU(nn.Module):
 
         weight = self.calc_weight()
 
-        out = F.conv2d(input, weight)
+        out = F.conv2d(input, weight.squeeze().inverse().unsqueeze(2).unsqueeze(3))
         logdet = height * width * torch.sum(self.w_s)
 
         return out, logdet
@@ -133,7 +133,7 @@ class InvConv2dLU(nn.Module):
     def reverse(self, output):
         weight = self.calc_weight()
 
-        return F.conv2d(output, weight.squeeze().inverse().unsqueeze(2).unsqueeze(3))
+        return F.conv2d(output, weight)
 
 
 class ZeroConv2d(nn.Module):
@@ -148,7 +148,7 @@ class ZeroConv2d(nn.Module):
     def forward(self, input):
         out = F.pad(input, [1, 1, 1, 1], value=1)
         out = self.conv(out)
-        out = out * torch.exp(self.scale * 3)
+        out = out * torch.exp(self.scale)
 
         return out
 
@@ -181,13 +181,13 @@ class AffineCoupling(nn.Module):
             # s = torch.exp(log_s)
             s = F.sigmoid(log_s + 2)
             # out_a = s * in_a + t
-            out_b = (in_b + t) * s
+            out_b = in_b / s - t
 
             logdet = torch.sum(torch.log(s).view(input.shape[0], -1), 1)
 
         else:
             net_out = self.net(in_a)
-            out_b = in_b + net_out
+            out_b = in_b - net_out
             logdet = None
 
         return torch.cat([in_a, out_b], 1), logdet
@@ -200,11 +200,11 @@ class AffineCoupling(nn.Module):
             # s = torch.exp(log_s)
             s = F.sigmoid(log_s + 2)
             # in_a = (out_a - t) / s
-            in_b = out_b / s - t
+            in_b = (out_b + t) * s
 
         else:
             net_out = self.net(out_a)
-            in_b = out_b - net_out
+            in_b = out_b + net_out
 
         return torch.cat([out_a, in_b], 1)
 
