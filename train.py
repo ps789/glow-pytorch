@@ -11,6 +11,7 @@ from torch.autograd import Variable, grad
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms, utils
 
+import sys
 from model import Glow
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -53,7 +54,8 @@ def sample_data(path, batch_size, image_size):
     )
 
     #dataset = datasets.ImageFolder(path, transform=transform)
-    dataset = datasets.MNIST(root=path, train=True, transform=transform, download=True)
+    #dataset = datasets.MNIST(root=path, train=True, transform=transform, download=True)
+    dataset = datasets.CIFAR10(root=path, train=True, transform = transform, download = True)
     loader = DataLoader(dataset, shuffle=True, batch_size=batch_size, num_workers=4)
     loader = iter(loader)
 
@@ -156,7 +158,7 @@ def train(args, model, optimizer):
             if not args.energy_distance:
                 if i == 0:
                     with torch.no_grad():
-                        log_p, logdet, _ = model.module(
+                        log_p, logdet, _ = model(
                             image + torch.rand_like(image) / n_bins
                         )
 
@@ -175,6 +177,11 @@ def train(args, model, optimizer):
                     z_sample_2.append(z_new.to(device))
                 sample = model.reverse(z_sample_2)
                 loss = _mmd_loss1(torch.flatten(image, 1, -1), torch.flatten(sample, 1, -1))
+            if loss >= 100000:
+                print("loss large", flush = True)
+                print("sample max")
+                print(sample.max())
+                sys.exit()
             model.zero_grad()
             loss.backward()
             # warmup_lr = args.lr * min(1, i * batch_size / (50000 * 10))
