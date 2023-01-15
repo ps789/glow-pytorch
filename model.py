@@ -57,7 +57,17 @@ class ActNorm(nn.Module):
             return input / self.scale - self.loc
 
     def reverse(self, output):
-        return (output + self.loc) * self.scale
+        
+        if self.initialized.item() == 0:
+            self.initialize(output)
+            self.initialized.fill_(1)
+        result = (output + self.loc) * self.scale
+        if not torch.isnan(output).any() and torch.isnan(result).any():
+            print("nan in actnorm")
+        if torch.isfinite(output).all() and not torch.isfinite(result).all():
+            print("inf in actnorm")
+
+        return result
 
 
 class InvConv2d(nn.Module):
@@ -74,15 +84,21 @@ class InvConv2d(nn.Module):
 
         out = F.conv2d(input, self.weight)
         logdet = (
-            height * width * torch.slogdet(self.weight.squeeze().double())[1].float()
+            height * width * torch.slogdet(self.weight.squeeze().inverse().double())[1].float()
         )
 
         return out, logdet
 
     def reverse(self, output):
-        return F.conv2d(
-            output, self.weight.squeeze().inverse().unsqueeze(2).unsqueeze(3)
+        result = F.conv2d(
+            output, self.weight.squeeze().unsqueeze(2).unsqueeze(3)
         )
+        if not torch.isnan(output).any() and torch.isnan(result).any():
+            print("nan in InvConv2d")
+        if torch.isfinite(output).all() and not torch.isfinite(result).all(): 
+            print("inf in InvConv2d")
+        return result
+
 
 
 class InvConv2dLU(nn.Module):
@@ -133,7 +149,13 @@ class InvConv2dLU(nn.Module):
     def reverse(self, output):
         weight = self.calc_weight()
 
-        return F.conv2d(output, weight)
+        result = F.conv2d(output, weight)
+        if not torch.isnan(output).any() and torch.isnan(result).any():
+            print("nan in InvConv2dLU")
+        if torch.isfinite(output).all() and not torch.isfinite(result).all():
+            print("inf in InvConv2dLU")
+        return result
+
 
 
 class ZeroConv2d(nn.Module):
@@ -146,10 +168,13 @@ class ZeroConv2d(nn.Module):
         self.scale = nn.Parameter(torch.zeros(1, out_channel, 1, 1))
 
     def forward(self, input):
+        if not torch.isfinite(input).all():
+            print("trigger")
         out = F.pad(input, [1, 1, 1, 1], value=1)
         out = self.conv(out)
         out = out * torch.exp(self.scale)
-
+        if not torch.isfinite(out).all():
+            print("yeah it's here")
         return out
 
 
@@ -202,11 +227,27 @@ class AffineCoupling(nn.Module):
             # in_a = (out_a - t) / s
             in_b = (out_b + t) * s
 
+            if not torch.isnan(output).any() and torch.isnan(in_b).any():
+                print("nan in sigmoid part")
+                if torch.isnan(out_b).any():
+                    print("out_b")
+                if torch.isnan(t).any():
+                    print("t")
+                if torch.isnan(s).any():
+                    print("s")
+                print(out_b.max())
+                print(t.max())
+                print(s.max())
         else:
             net_out = self.net(out_a)
             in_b = out_b + net_out
-
-        return torch.cat([out_a, in_b], 1)
+    
+        result = torch.cat([out_a, in_b], 1)
+        if not torch.isnan(output).any() and torch.isnan(result).any():
+            print("nan in Affine Coupling")
+        if torch.isfinite(output).all() and not torch.isfinite(result).all():
+            print("inf in Affine Coupling")
+        return result
 
 
 class Flow(nn.Module):
@@ -297,7 +338,10 @@ class Block(nn.Module):
 
     def reverse(self, output, eps=None, reconstruct=False):
         input = output
-
+        if not torch.isfinite(output).all():
+            print("why is eps infinite")
+        if torch.isnan(output).any():
+            print("why is eps nan")
         if reconstruct:
             if self.split:
                 input = torch.cat([output, eps], 1)
@@ -307,17 +351,29 @@ class Block(nn.Module):
 
         else:
             if self.split:
-                mean, log_sd = self.prior(input).chunk(2, 1)
+                #mean, log_sd = self.prior(input).chunk(2, 1)
+                #mean, log_sd = self.prior(zero).chunk(2, 1)
+                mean, log_sd = torch.zeros_like(input), torch.zeros_like(input)
                 z = gaussian_sample(eps, mean, log_sd)
                 input = torch.cat([output, z], 1)
+                if not torch.isfinite(z).all():
+                    print("Z22222")
+                    print(mean.size())
+                    print(log_sd.size())
+                    print(input.size())
 
             else:
                 zero = torch.zeros_like(input)
                 # zero = F.pad(zero, [1, 1, 1, 1], value=1)
-                mean, log_sd = self.prior(zero).chunk(2, 1)
-                z = gaussian_sample(eps, mean, log_sd)
+                #mean, log_sd = self.prior(zero).chunk(2, 1)
+                z = gaussian_sample(eps, zero, zero)
                 input = z
-
+                if not torch.isfinite(z).all():
+                    print("ZZZZZZ")
+        if not torch.isfinite(input).all():
+            print("Something is wrong")
+        if torch.isnan(input).any():
+            print("Something is wrong nan")
         for flow in self.flows[::-1]:
             input = flow.reverse(input)
 
@@ -327,8 +383,12 @@ class Block(nn.Module):
         unsqueezed = unsqueezed.permute(0, 1, 4, 2, 5, 3)
         unsqueezed = unsqueezed.contiguous().view(
             b_size, n_channel // 4, height * 2, width * 2
+        
         )
-
+        if not torch.isfinite(unsqueezed).all():
+            print("Something is very wrong")
+        if torch.isnan(unsqueezed).any():
+            print("Something is very wrong nan")
         return unsqueezed
 
 
@@ -364,9 +424,21 @@ class Glow(nn.Module):
     def reverse(self, z_list, reconstruct=False):
         for i, block in enumerate(self.blocks[::-1]):
             if i == 0:
+                if not torch.isfinite(z_list[-1]).all():
+                    print("not finite in block")
+                    print(i)
+                if torch.isnan(z_list[-1]).any():
+                    print("nan in block")
+                    print(i)
                 input = block.reverse(z_list[-1], z_list[-1], reconstruct=reconstruct)
 
             else:
+                if not torch.isfinite(input).all():
+                    print("not finite in block")
+                    print(i)
+                if torch.isnan(input).any():
+                    print("nan in block")
+                    print(i)
                 input = block.reverse(input, z_list[-(i + 1)], reconstruct=reconstruct)
 
         return input

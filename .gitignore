@@ -105,3 +105,4 @@ venv.bak/
 
 /mnist
 /cifar-10-batches-py
+/checkpoint_mnist

@@ -31,17 +31,18 @@ parser.add_argument(
 parser.add_argument(
     "--affine", action="store_true", help="use affine coupling instead of additive"
 )
+parser.add_argument("--checkpoint_path", type=str, help="Path to checkpoint")
 parser.add_argument(
     "--energy_distance", action="store_true", help="use energy distance"
 )
 parser.add_argument("--n_bits", default=5, type=int, help="number of bits")
 parser.add_argument("--lr", default=1e-4, type=float, help="learning rate")
-parser.add_argument("--img_size", default=64, type=int, help="image size")
+parser.add_argument("--img_size", default=32, type=int, help="image size")
 parser.add_argument("--temp", default=0.7, type=float, help="temperature of sampling")
 parser.add_argument("--n_sample", default=20, type=int, help="number of samples")
 parser.add_argument("--path", metavar="PATH", type=str, help="Path to image directory")
 parser.add_argument("--n_channels", default = 3, type = int, help = "number of channels")
-
+parser.add_argument("--epoch", type = str, help = "epoch number to load")
 
 def sample_data(path, batch_size, image_size):
     transform = transforms.Compose(
@@ -54,8 +55,11 @@ def sample_data(path, batch_size, image_size):
     )
 
     #dataset = datasets.ImageFolder(path, transform=transform)
-    #dataset = datasets.MNIST(root=path, train=True, transform=transform, download=True)
-    dataset = datasets.CIFAR10(root=path, train=True, transform = transform, download = True)
+    if path == "mnist":
+        dataset = datasets.MNIST(root=path, train=True, transform=transform, download=True)
+    
+    else:
+        dataset = datasets.CIFAR10(root=path, train=True, transform = transform, download = True)
     loader = DataLoader(dataset, shuffle=True, batch_size=batch_size, num_workers=4)
     loader = iter(loader)
 
@@ -132,9 +136,10 @@ def _mmd_loss1(x, gen_x, sigma = [2, 5, 10, 20, 40, 80]):
             # kernel values for each combination of the rows in 'X'
             kernel_val = torch.exp(1.0 / sigma[i] * exponent)
             loss += torch.sum(S * kernel_val)
-        return torch.sqrt(loss)
+        return loss
 
 def train(args, model, optimizer):
+    torch.autograd.set_detect_anomaly(True)
     dataset = iter(sample_data(args.path, args.batch, args.img_size))
     n_bins = 2.0 ** args.n_bits
 
@@ -177,16 +182,20 @@ def train(args, model, optimizer):
                     z_sample_2.append(z_new.to(device))
                 sample = model.reverse(z_sample_2)
                 loss = _mmd_loss1(torch.flatten(image, 1, -1), torch.flatten(sample, 1, -1))
-            if loss >= 100000:
+            model.zero_grad()
+            if loss >= 10000:
                 print("loss large", flush = True)
                 print("sample max")
                 print(sample.max())
-                sys.exit()
-            model.zero_grad()
-            loss.backward()
+            if torch.isnan(loss):
+                print("loss nan", flush = True)
+                print("sample max")
+                print(sample.max())
             # warmup_lr = args.lr * min(1, i * batch_size / (50000 * 10))
+            loss.backward()
             warmup_lr = args.lr
             optimizer.param_groups[0]["lr"] = warmup_lr
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 5)
             optimizer.step()
             losses.append(loss.item())
             if len(losses)>50:
@@ -232,5 +241,7 @@ if __name__ == "__main__":
     model = model.to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
-
+    if args.checkpoint_path != None:
+        model.load_state_dict(torch.load(args.checkpoint_path+"/model_"+args.epoch+".pt"))
+        optimizer.load_state_dict(torch.load(args.checkpoint_path+"/optim_"+args.epoch+".pt"))
     train(args, model, optimizer)
